@@ -447,7 +447,7 @@ function toNum(s,loc){ if(s==null) return null; s=String(s).trim().replace(/\s/g
   let v=parseFloat(s); if(isNaN(v)) return null; if(neg) v=-v; return pct? v/100 : v; }
 const MET=[["%htkh lk","m"],["%htkh năm","y"],["tlbt gồm dp 2026","b"],["tlbt gồm dp 2025","b25"],["kh dt lk","kh_m"],["kh dt năm","kh_y"],["dt thực hiện lk 2026","dt"],["dt thực hiện lk 2025","dt25"],["bt gồm dp 2026","bt"],["bt gồm dp 2025","bt25"]];
 function sheetToData(rows){
-  const loc=detectLocale(rows);
+  FIXED=0; const loc=detectLocale(rows);
   const hi=rows.findIndex(r=>r.some(c=>c.trim()==="Đơn vị"));
   if(hi<0) throw new Error("Không tìm thấy dòng tiêu đề có chữ 'Đơn vị'");
   const nameCol=rows[hi].findIndex(c=>c.trim()==="Đơn vị"), ttCol=Math.max(0,nameCol-1);
@@ -472,12 +472,29 @@ function sheetToData(rows){
   let div=CONFIG.MONEY_DIVISOR;
   if(div==="auto"){ const v=raw.map(d=>d.p[prods[0]].kh_y).filter(x=>x>0).sort((a,b)=>a-b); div=(v[Math.floor(v.length/2)]||0)>1e8?1e6:1; }
   raw.forEach(d=>prods.forEach(p=>{ const o=d.p[p]; ["kh_m","kh_y","dt","bt","dt25","bt25"].forEach(k=>{ if(o[k]!=null) o[k]=o[k]/div; });
-    // tính lại tỷ lệ từ số tiền để không bị làm tròn theo định dạng hiển thị của sheet
-    if(o.dt!=null){ o.m = o.kh_m>0 ? o.dt/o.kh_m : null; o.y = o.kh_y>0 ? o.dt/o.kh_y : null; }
-    if(o.bt!=null&&o.dt) o.b=o.bt/o.dt; else if(o.dt===0) o.b=null;
-    if(o.bt25!=null&&o.dt25) o.b25=o.bt25/o.dt25; else if(o.dt25===0) o.b25=null; }));
-  const period=(rows.slice(0,hi).map(r=>r.join(" ").trim()).find(s=>/đến ngày/i.test(s))||"").replace(/\s+/g," ").trim();
-  return {prods, units, totals, groups, period};
+    fixRow(o); }));
+  return {prods, units, totals, groups, period:periodOf(rows,hi), fixed:FIXED};
+}
+let FIXED=0;
+const close=(a,b)=>a!=null&&b!=null&&Math.abs(a-b)<=Math.max(0.03*Math.abs(b),2);
+// Đối chiếu số tiền với cột % trong sheet (cột % luôn xuất ra đúng); nếu số tiền bị đọc sai do định dạng ô thì sửa lại
+function fixRow(o){
+  const okM=o.m!=null&&o.m>=0.05, okY=o.y!=null&&o.y>=0.05;
+  if(o.dt!=null&&okM&&!close(o.dt,o.m*o.kh_m)){
+    const a=okM&&o.kh_m?o.m*o.kh_m:null, b=okY&&o.kh_y?o.y*o.kh_y:null;
+    const dtTrust=(o.b!=null&&Math.abs(o.b)>=0.02&&o.bt!=null&&close(o.bt,o.b*o.dt))||(o.dt25>0&&o.dt/o.dt25>0.2&&o.dt/o.dt25<5);
+    if(!dtTrust&&a!=null&&b!=null&&close(a,b)){ o.dt=a; FIXED++; }     // KH đúng, DT sai
+    else { o.kh_m=o.dt/o.m; if(okY) o.kh_y=o.dt/o.y; FIXED++; }        // DT đúng, KH sai
+  } else if(o.dt!=null&&okY&&o.kh_y!=null&&!close(o.dt,o.y*o.kh_y)){ o.kh_y=o.dt/o.y; FIXED++; }
+  if(o.dt&&o.b!=null&&Math.abs(o.b)>=0.02&&!close(o.bt,o.b*o.dt)){ o.bt=o.b*o.dt; FIXED++; }
+  if(o.dt25&&o.b25!=null&&Math.abs(o.b25)>=0.02&&o.bt25!=null&&!close(o.bt25,o.b25*o.dt25)){ o.bt25=o.b25*o.dt25; FIXED++; }
+  // tính lại tỷ lệ từ số tiền cho chính xác hơn số % đã làm tròn
+  if(o.dt!=null){ o.m = o.kh_m>0 ? o.dt/o.kh_m : null; o.y = o.kh_y>0 ? o.dt/o.kh_y : null; }
+  if(o.bt!=null&&o.dt) o.b=o.bt/o.dt; else if(o.dt===0) o.b=null;
+  if(o.bt25!=null&&o.dt25) o.b25=o.bt25/o.dt25; else if(o.dt25===0) o.b25=null;
+}
+function periodOf(rows,hi){
+  return (rows.slice(0,hi).map(r=>r.join(" ").trim()).find(s=>/đến ngày/i.test(s))||"").replace(/\s+/g," ").trim();
 }
 
 async function loadData(){
@@ -497,7 +514,7 @@ async function loadData(){
   $("asOf").textContent=am?am[1]:"";
   $("lede").textContent=(D.period||"")+". Doanh thu và bồi thường tính bằng triệu đồng; tỷ lệ bồi thường đã gồm dự phòng.";
   const now=new Date(), hh=String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0");
-  $("srcTxt").innerHTML = live ? ` · tải lúc ${hh}` : (err ? ` · <b>không đọc được Google Sheet, đang hiện dữ liệu mẫu</b>` : ` · dữ liệu mẫu`);
+  $("srcTxt").innerHTML = live ? ` · tải lúc ${hh}`+(data.fixed?` · <span title="Một số ô số tiền trong Google Sheet có định dạng khiến CSV xuất sai; trang đã tự tính lại từ cột %. Nên đổi định dạng các cột tiền sang Số.">đã tự hiệu chỉnh ${data.fixed} ô số tiền</span>`:"") : (err ? ` · <b>không đọc được Google Sheet, đang hiện dữ liệu mẫu</b>` : ` · dữ liệu mẫu`);
   $("srcDot").style.background = live ? "var(--good)" : "var(--orange)";
   ["prodTop","prodNav"].forEach(id=>{$(id).innerHTML=D.prods.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join("");});
   if(!D.prods.includes(product)) product=D.prods[0];
